@@ -22,6 +22,9 @@ jobs:
           # Replay fuzz corpus inputs to catch regressions (non-fatal if directory is absent)
           g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/fuzz_corpus_replay_tests.cpp -o run_fuzz_corpus_replay_sanitized
           ./run_fuzz_corpus_replay_sanitized
+          # Focused regression tests for notable crash artifacts
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/fuzz_regressions_tests.cpp -o run_fuzz_regressions_sanitized
+          ./run_fuzz_regressions_sanitized
       - name: Build fuzz target (clang, no run)
         run: |
           clang++ -std=c++17 -O1 -g -fsanitize=fuzzer,address,undefined engine.cpp tests/fuzz_pe.cpp -o fuzz_pe || true
