@@ -1,0 +1,49 @@
+name: ML Training
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y g++ make
+
+      - name: Build EMBER exporter
+        run: |
+          make export_ember_features
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate sample dataset (safe, synthetic)
+        run: python3 tools/generate_dataset.py
+
+      - name: Train model (EMBER features)
+        run: python3 tools/train_detector.py --ember
+
+      - name: Verify model
+        run: |
+          ls -l models || true
+          if [ -f models/logreg.joblib ]; then echo "Model generated"; else echo "Model not found"; fi
+
+      - name: Upload trained model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model
+          path: models/logreg.joblib
