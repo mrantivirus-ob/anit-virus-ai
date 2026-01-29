@@ -22,6 +22,7 @@
 #include <future>
 #include <queue>
 #include <variant>
+#include <climits>
 #include <random>
 #include <iomanip>
 #include <filesystem>
@@ -3555,152 +3556,7 @@ namespace AVEngine {
         }
         
         // Helper: Extract PE features for EMBER (bounds-checked)
-        static void extract_ember_pe_features(const std::vector<uint8_t>& data, EMBERFeatures& features) {
-            if (data.size() < 0x40) return;
-
-            auto read_u16 = [&](size_t off, uint16_t &out)->bool {
-                if (off + 2 > data.size()) return false;
-                out = (uint16_t)data[off] | ((uint16_t)data[off + 1] << 8);
-                return true;
-            };
-            auto read_u32 = [&](size_t off, uint32_t &out)->bool {
-                if (off + 4 > data.size()) return false;
-                out = (uint32_t)data[off] | ((uint32_t)data[off + 1] << 8) | ((uint32_t)data[off + 2] << 16) | ((uint32_t)data[off + 3] << 24);
-                return true;
-            };
-
-            uint32_t pe_offset = 0;
-            if (!read_u32(0x3C, pe_offset)) return;
-            if (pe_offset + 4 > data.size()) return;
-            if (!(data[pe_offset] == 'P' && data[pe_offset + 1] == 'E' && data[pe_offset + 2] == 0 && data[pe_offset + 3] == 0)) return;
-
-            // COFF Header (20 bytes) must fit
-            size_t coff_off = pe_offset + 4;
-            if (coff_off + 20 > data.size()) return;
-
-            uint16_t machine = 0, num_sections = 0, characteristics = 0;
-            uint32_t timestamp = 0;
-            uint16_t size_of_optional = 0;
-            read_u16(coff_off + 0, machine);
-            read_u16(coff_off + 2, num_sections);
-            read_u32(coff_off + 4, timestamp);
-            read_u16(coff_off + 16, size_of_optional);
-            read_u16(coff_off + 18, characteristics);
-
-            features.machine = machine;
-            features.num_sections = num_sections;
-            features.timestamp = timestamp;
-            features.characteristics = characteristics;
-
-            // Optional header handling (use size_of_optional)
-            size_t opt_header_offset = coff_off + 20;
-            if (opt_header_offset + size_of_optional <= data.size() && size_of_optional >= 2) {
-                uint16_t magic = 0;
-                if (read_u16(opt_header_offset, magic)) {
-                    bool is_pe32 = (magic == 0x10b);
-                    size_t min_required = is_pe32 ? 96 : 112; // conservative
-                    if (size_of_optional >= min_required) {
-                        // Attempt a few safe reads
-                        uint32_t image_base = 0, entry_point = 0, code_size = 0;
-                        read_u32(opt_header_offset + (is_pe32 ? 28 : 24), image_base);
-                        read_u32(opt_header_offset + (is_pe32 ? 16 : 16), entry_point);
-                        read_u32(opt_header_offset + (is_pe32 ? 4 : 4), code_size);
-
-                        features.image_base = image_base;
-                        features.entry_point = entry_point;
-                        features.code_size = code_size;
-
-                        uint16_t ss = 0, dllc = 0;
-                        read_u16(opt_header_offset + (is_pe32 ? 68 : 88), ss);
-                        read_u16(opt_header_offset + (is_pe32 ? 70 : 90), dllc);
-                        features.subsystem = ss;
-                        features.dll_characteristics = dllc;
-                    }
-                }
-            }
-
-            // Sections: located at opt_header_offset + size_of_optional
-            size_t section_header_offset = opt_header_offset + size_of_optional;
-            for (uint16_t i = 0; i < num_sections && i < 32; ++i) {
-                size_t sec_off = section_header_offset + size_t(i) * 40;
-                if (sec_off + 40 > data.size()) break;
-
-                uint32_t sec_virt_size = 0, sec_size = 0, sec_ptr = 0;
-                read_u32(sec_off + 0, sec_virt_size);
-                read_u32(sec_off + 8, sec_size);
-                read_u32(sec_off + 20, sec_ptr);
-
-                // Section name
-                std::string name;
-                for (size_t j = 0; j < 8 && sec_off + j < data.size(); ++j) {
-                    char c = (char)data[sec_off + j];
-                    if (c == '\0') break;
-                    name += c;
-                }
-
-                features.section_names.push_back(name);
-                features.section_sizes.push_back(std::min(sec_size, 100000000U));
-                features.section_virt_sizes.push_back(std::min(sec_virt_size, 100000000U));
-
-                // section entropy (sample up to 4096 bytes)
-                if (sec_ptr > 0 && sec_ptr < data.size()) {
-                    size_t sample_size = std::min<size_t>(sec_size, 4096);
-                    if (sec_ptr + sample_size <= data.size()) {
-                        std::vector<uint8_t> sec_data(data.begin() + sec_ptr, data.begin() + sec_ptr + sample_size);
-                        features.section_entropy.push_back(compute_entropy(sec_data));
-                    }
-                }
-            }
-
-            // IMPORT table (safe, best-effort)
-            // Data directories start at opt_header_offset + (is_pe32 ? 96 : 112)
-            if (opt_header_offset + 96 < data.size()) {
-                uint32_t import_rva = 0, import_size = 0;
-                if (read_u32(opt_header_offset + 104, import_rva) && read_u32(opt_header_offset + 108, import_size)) {
-                    // convert RVA to file offset
-                    uint32_t imp_off = 0;
-                    for (size_t i = 0; i < features.section_names.size(); ++i) {
-                        size_t sec_off = section_header_offset + i * 40;
-                        uint32_t sec_va = 0, sec_size = 0, sec_ptr = 0;
-                        read_u32(sec_off + 12, sec_va);
-                        read_u32(sec_off + 8, sec_size);
-                        read_u32(sec_off + 20, sec_ptr);
-                        if (import_rva >= sec_va && import_rva < sec_va + sec_size) {
-                            imp_off = sec_ptr + (import_rva - sec_va);
-                            break;
-                        }
-                    }
-                    if (imp_off > 0 && imp_off + 20 <= data.size()) {
-                        // Attempt to read a couple of import entries safely
-                        size_t cur = imp_off;
-                        while (cur + 20 <= data.size()) {
-                            uint32_t name_rva = 0;
-                            if (!read_u32(cur + 12, name_rva) || name_rva == 0) break;
-                            uint32_t name_off = 0;
-                            // find containing section
-                            for (size_t i = 0; i < features.section_names.size(); ++i) {
-                                size_t sec_off = section_header_offset + i * 40;
-                                uint32_t sec_va = 0, sec_size = 0, sec_ptr = 0;
-                                read_u32(sec_off + 12, sec_va);
-                                read_u32(sec_off + 8, sec_size);
-                                read_u32(sec_off + 20, sec_ptr);
-                                if (name_rva >= sec_va && name_rva < sec_va + sec_size) {
-                                    name_off = sec_ptr + (name_rva - sec_va);
-                                    break;
-                                }
-                            }
-                            if (name_off > 0 && name_off < data.size()) {
-                                std::string dll;
-                                for (size_t p = name_off; p < data.size() && data[p] != 0; ++p) dll += (char)data[p];
-                                if (!dll.empty()) features.import_dlls.push_back(dll);
-                            }
-                            cur += 20;
-                        }
-                        features.num_imports = (int)features.import_dlls.size() * 50;
-                    }
-                }
-            }
-        }
+        static void extract_ember_pe_features(const std::vector<uint8_t>& data, EMBERFeatures& features);
         
         // Helper: Extract string features for EMBER
         static void extract_ember_string_features(const std::vector<uint8_t>& data, EMBERFeatures& features) {
@@ -3786,21 +3642,23 @@ namespace AVEngine {
 
             uint32_t pe_offset = 0;
             if (!read_u32(0x3C, pe_offset)) return;
+            // Ensure the PE header is entirely within bounds for basic header reads
             if (pe_offset + 4 > data.size()) return;
+            if (pe_offset > data.size() || pe_offset + 24 > data.size()) return; // ensure room for basic COFF fields
             if (!(data[pe_offset] == 'P' && data[pe_offset + 1] == 'E')) return;
 
             uint16_t num_sections = 0;
             uint32_t timestamp = 0;
             uint16_t characteristics = 0;
-            read_u16(pe_offset + 6, num_sections);
-            read_u32(pe_offset + 8, timestamp);
-            read_u16(pe_offset + 18, characteristics);
+            if (!read_u16(pe_offset + 6, num_sections)) return;
+            if (!read_u32(pe_offset + 8, timestamp)) return;
+            if (!read_u16(pe_offset + 18, characteristics)) return;
 
             features.section_count = std::min((int)num_sections, 20);
 
             // Optional header offset (immediately after COFF header)
             size_t optional_header_offset = pe_offset + 4 + 20;  // PE signature + COFF header
-            if (optional_header_offset + 96 <= data.size()) {
+            if (optional_header_offset + 108 <= data.size()) {
                 // Attempt to read import directory RVA/size safely (best-effort)
                 uint32_t import_rva = 0, import_size = 0;
                 if (read_u32(optional_header_offset + 104, import_rva) && read_u32(optional_header_offset + 108, import_size)) {
@@ -3811,14 +3669,22 @@ namespace AVEngine {
             // Extract section headers (safely)
             // Determine size_of_optional from COFF header
             uint16_t size_of_optional = 0;
-            read_u16(pe_offset + 20 - 2, size_of_optional); // SizeOfOptionalHeader is at offset + 20 - 2 from PE start
+            if (!read_u16(pe_offset + 18, size_of_optional)) return; // SizeOfOptionalHeader is at COFF+16, which is pe_offset+18
+
+            // Validate size_of_optional and section offset arithmetic to avoid overflow
+            if (size_of_optional > 0 && (pe_offset + 4 + 20 > data.size() || pe_offset + 4 + 20 + size_of_optional < pe_offset + 4 + 20 || pe_offset + 4 + 20 + size_of_optional > data.size())) return;
+
             size_t section_header_offset = pe_offset + 4 + 20 + size_of_optional;
-            for (int i = 0; i < num_sections && i < 16; i++) {
-                size_t sec_offset = section_header_offset + (i * 40);
-                if (sec_offset + 40 > data.size()) break;
+            // Cap number of sections to a sane limit to avoid huge loops
+            int section_limit = std::min((int)num_sections, 256);
+            for (int i = 0; i < section_limit && i < 16; i++) {
+                // Prevent overflow in sec_offset calculation
+                if (i > INT_MAX / 40) break;
+                size_t sec_offset = section_header_offset + (size_t)i * 40;
+                if (sec_offset + 40 > data.size() || sec_offset < section_header_offset) break;
 
                 uint32_t sec_size = 0;
-                read_u32(sec_offset + 8, sec_size);
+                if (!read_u32(sec_offset + 8, sec_size)) continue;
                 features.section_sizes.push_back(std::min(sec_size, 100000000U));
 
                 // Read section name
@@ -3843,6 +3709,95 @@ namespace AVEngine {
                 features.api_call_count += 10;
             }
         }
+
+    public:
+        // ==========================
+        // Light-weight heuristic detector
+        // ==========================
+        struct DetectionResult {
+            double score = 0.0;   // 0.0 - 1.0
+            bool is_malware = false;
+            std::string reason;
+        };
+
+        class Detector {
+        public:
+            // Detect from raw bytes (fast, memory-only)
+            static DetectionResult detect_from_bytes(const std::vector<uint8_t>& data, double threshold = 0.5) {
+                DetectionResult res;
+                if (data.empty()) {
+                    res.reason = "empty input";
+                    return res;
+                }
+
+                // Gather features
+                RealFeatures rf;
+                analyze_pe_header(data, rf);
+
+                EMBERFeatures ef;
+                extract_ember_string_features(data, ef);
+                extract_ngram_features(data, ef);
+
+                // Basic heuristics
+                double score = 0.0;
+
+                // Packing heuristics (strong signal)
+                score += std::max(rf.packer_score, ef.packed_score) * 0.7;
+
+                // High entropy -> suspicious
+                if (ef.entropy > 7.0) score += 0.15;
+
+                // No imports (often packed or shellcode)
+                if (ef.num_imports == 0 && rf.import_count == 0) score += 0.15;
+
+                // Suspicious imported functions (e.g., dynamic loading, process manipulation)
+                for (const auto& fn : ef.imported_functions) {
+                    if (fn.find("GetProcAddress") != std::string::npos || fn.find("LoadLibrary") != std::string::npos) {
+                        score += 0.12;
+                    }
+                    if (fn.find("VirtualAlloc") != std::string::npos || fn.find("WriteProcessMemory") != std::string::npos || fn.find("CreateRemoteThread") != std::string::npos) {
+                        score += 0.2;
+                    }
+                }
+
+                // Section name heuristics
+                for (const auto& name : ef.section_names) {
+                    if (name.find("UPX") != std::string::npos || name.find("packed") != std::string::npos) {
+                        score += 0.25;
+                    }
+                    if (name == ".text" && rf.section_count > 10) score += 0.05;
+                }
+
+                // Cap and normalize
+                score = std::min(1.0, std::max(0.0, score));
+                res.score = score;
+                res.is_malware = (score >= threshold);
+
+                // Build a short reason string for explainability
+                if (res.is_malware) {
+                    res.reason = "heuristic_threshold";
+                    if (ef.packed_score > 0.5 || rf.packer_score > 0.5) res.reason += ";packed";
+                    if (ef.num_imports == 0) res.reason += ";no_imports";
+                } else {
+                    res.reason = "benign_or_unknown";
+                }
+
+                return res;
+            }
+
+            // Detect directly from a file path
+            static DetectionResult detect_from_file(const std::string& path, double threshold = 0.5) {
+                std::ifstream f(path, std::ios::binary);
+                DetectionResult res;
+                if (!f) {
+                    res.reason = "file_not_open";
+                    return res;
+                }
+                std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                return detect_from_bytes(data, threshold);
+            }
+        };
+
 
     private:
         static double compute_entropy(const std::vector<uint8_t>& data) {
@@ -4198,6 +4153,11 @@ namespace AVEngine {
         std::ifstream file(file_path, std::ios::binary | std::ios::ate);
         if (!file.is_open()) return info;
         std::streamsize fsize = file.tellg();
+        if (fsize < 0) {
+            // Could not determine size; abort safely
+            file.close();
+            return info;
+        }
         file.seekg(0, std::ios::beg);
 
         // Read a safe prefix (limiting to first 2MB)
@@ -4262,6 +4222,214 @@ namespace AVEngine {
         }
 
         return info;
+    }
+
+    // Out-of-class implementation to ensure external linkage for tests
+    void FileFeatureExtractor::extract_ember_pe_features(const std::vector<uint8_t>& data, EMBERFeatures& features) {
+        if (data.size() < 0x40) return;
+
+        auto read_u16 = [&](size_t off, uint16_t &out)->bool {
+            if (off + 2 > data.size()) return false;
+            out = (uint16_t)data[off] | ((uint16_t)data[off + 1] << 8);
+            return true;
+        };
+        auto read_u32 = [&](size_t off, uint32_t &out)->bool {
+            if (off + 4 > data.size()) return false;
+            out = (uint32_t)data[off] | ((uint32_t)data[off + 1] << 8) | ((uint32_t)data[off + 2] << 16) | ((uint32_t)data[off + 3] << 24);
+            return true;
+        };
+
+        uint32_t pe_offset = 0;
+        if (!read_u32(0x3C, pe_offset)) return;
+        if (pe_offset + 4 > data.size()) return;
+        if (!(data[pe_offset] == 'P' && data[pe_offset + 1] == 'E' && data[pe_offset + 2] == 0 && data[pe_offset + 3] == 0)) return;
+
+        // COFF Header (20 bytes) must fit
+        size_t coff_off = pe_offset + 4;
+        if (coff_off + 20 > data.size()) return;
+
+        uint16_t machine = 0, num_sections = 0, characteristics = 0;
+        uint32_t timestamp = 0;
+        uint16_t size_of_optional = 0;
+        read_u16(coff_off + 0, machine);
+        read_u16(coff_off + 2, num_sections);
+        read_u32(coff_off + 4, timestamp);
+        read_u16(coff_off + 16, size_of_optional);
+        read_u16(coff_off + 18, characteristics);
+
+        features.machine = machine;
+        features.num_sections = num_sections;
+        features.timestamp = timestamp;
+        features.characteristics = characteristics;
+
+        // Optional header handling (use size_of_optional)
+        size_t opt_header_offset = coff_off + 20;
+        if (opt_header_offset + size_of_optional <= data.size() && size_of_optional >= 2) {
+            uint16_t magic = 0;
+            if (read_u16(opt_header_offset, magic)) {
+                bool is_pe32 = (magic == 0x10b);
+                size_t min_required = is_pe32 ? 96 : 112; // conservative
+                if (size_of_optional >= min_required) {
+                    // Attempt a few safe reads
+                    uint32_t image_base = 0, entry_point = 0, code_size = 0;
+                    read_u32(opt_header_offset + (is_pe32 ? 28 : 24), image_base);
+                    read_u32(opt_header_offset + (is_pe32 ? 16 : 16), entry_point);
+                    read_u32(opt_header_offset + (is_pe32 ? 4 : 4), code_size);
+
+                    features.image_base = image_base;
+                    features.entry_point = entry_point;
+                    features.code_size = code_size;
+
+                    uint16_t ss = 0, dllc = 0;
+                    read_u16(opt_header_offset + (is_pe32 ? 68 : 88), ss);
+                    read_u16(opt_header_offset + (is_pe32 ? 70 : 90), dllc);
+                    features.subsystem = ss;
+                    features.dll_characteristics = dllc;
+                }
+            }
+        }
+
+        // Sections: located at opt_header_offset + size_of_optional
+        size_t section_header_offset = opt_header_offset + size_of_optional;
+        for (uint16_t i = 0; i < num_sections && i < 32; ++i) {
+            size_t sec_off = section_header_offset + size_t(i) * 40;
+            if (sec_off + 40 > data.size()) break;
+
+            uint32_t sec_virt_size = 0, sec_size = 0, sec_ptr = 0;
+            read_u32(sec_off + 0, sec_virt_size);
+            read_u32(sec_off + 8, sec_size);
+            read_u32(sec_off + 20, sec_ptr);
+
+            // Section name
+            std::string name;
+            for (size_t j = 0; j < 8 && sec_off + j < data.size(); ++j) {
+                char c = (char)data[sec_off + j];
+                if (c == '\0') break;
+                name += c;
+            }
+
+            features.section_names.push_back(name);
+            features.section_sizes.push_back(std::min(sec_size, 100000000U));
+            features.section_virt_sizes.push_back(std::min(sec_virt_size, 100000000U));
+
+            // section entropy (sample up to 4096 bytes)
+            if (sec_ptr > 0 && sec_ptr < data.size()) {
+                size_t sample_size = std::min<size_t>(sec_size, 4096);
+                if (sec_ptr + sample_size <= data.size()) {
+                    std::vector<uint8_t> sec_data(data.begin() + sec_ptr, data.begin() + sec_ptr + sample_size);
+                    features.section_entropy.push_back(compute_entropy(sec_data));
+                }
+            }
+        }
+
+        // IMPORT table (safe, best-effort)
+        // Data directories start at opt_header_offset + (is_pe32 ? 96 : 112)
+        if (opt_header_offset + 96 < data.size()) {
+            uint32_t import_rva = 0, import_size = 0;
+            if (read_u32(opt_header_offset + 104, import_rva) && read_u32(opt_header_offset + 108, import_size)) {
+                // convert RVA to file offset
+                uint32_t imp_off = 0;
+                for (size_t i = 0; i < features.section_names.size(); ++i) {
+                    size_t sec_off = section_header_offset + i * 40;
+                    uint32_t sec_va = 0, sec_size = 0, sec_ptr = 0;
+                    read_u32(sec_off + 12, sec_va);
+                    read_u32(sec_off + 8, sec_size);
+                    read_u32(sec_off + 20, sec_ptr);
+                    if (import_rva >= sec_va && import_rva < sec_va + sec_size) {
+                        imp_off = sec_ptr + (import_rva - sec_va);
+                        break;
+                    }
+                }
+                if (imp_off > 0 && imp_off + 20 <= data.size()) {
+                    // Attempt to read a couple of import entries safely
+                    size_t cur = imp_off;
+                    while (cur + 20 <= data.size()) {
+                        uint32_t name_rva = 0;
+                        if (!read_u32(cur + 12, name_rva) || name_rva == 0) break;
+                        uint32_t name_off = 0;
+                        // find containing section
+                        for (size_t i = 0; i < features.section_names.size(); ++i) {
+                            size_t sec_off = section_header_offset + i * 40;
+                            uint32_t sec_va = 0, sec_size = 0, sec_ptr = 0;
+                            read_u32(sec_off + 12, sec_va);
+                            read_u32(sec_off + 8, sec_size);
+                            read_u32(sec_off + 20, sec_ptr);
+                            if (name_rva >= sec_va && name_rva < sec_va + sec_size) {
+                                name_off = sec_ptr + (name_rva - sec_va);
+                                break;
+                            }
+                        }
+                        if (name_off > 0 && name_off < data.size()) {
+                            std::string dll;
+                            for (size_t p = name_off; p < data.size() && data[p] != 0; ++p) dll += (char)data[p];
+                            if (!dll.empty()) features.import_dlls.push_back(dll);
+                        }
+                        cur += 20;
+                    }
+                    features.num_imports = (int)features.import_dlls.size() * 50;
+                }
+            }
+        }
+    }
+
+
+    // Top-level detector wrapper (convenience API)
+    struct DetectionResult {
+        double score = 0.0;
+        bool is_malware = false;
+        std::string reason;
+    };
+
+    class Detector {
+    public:
+        static DetectionResult detect_from_bytes(const std::vector<uint8_t>& data, double threshold = 0.5) {
+            DetectionResult out;
+            auto inner = FileFeatureExtractor::Detector::detect_from_bytes(data, threshold);
+            out.score = inner.score;
+            out.is_malware = inner.is_malware;
+            out.reason = inner.reason;
+            return out;
+        }
+
+        static DetectionResult detect_from_file(const std::string& path, double threshold = 0.5) {
+            DetectionResult out;
+            std::ifstream f(path, std::ios::binary);
+            if (!f) {
+                out.reason = "file_not_open";
+                return out;
+            }
+            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            return detect_from_bytes(data, threshold);
+        }
+    };
+
+    // C-callable lightweight parse entry used for fuzzing (memory-only) - safe wrapper
+    extern "C" void fuzz_parse_pe_bytes(const uint8_t* bytes, size_t size) {
+        std::vector<uint8_t> data;
+        if (size > 0) data.assign(bytes, bytes + size);
+        AVEngine::RealFeatures rf;
+        if (!data.empty()) {
+            AVEngine::FileFeatureExtractor::analyze_pe_header(data, rf);
+        }
+    }
+
+    // C-compatible detection wrappers for tests and interop
+    extern "C" double detect_pe_score_from_bytes(const uint8_t* bytes, size_t size, double threshold) {
+        std::vector<uint8_t> data;
+        if (size > 0) data.assign(bytes, bytes + size);
+        auto res = AVEngine::Detector::detect_from_bytes(data, threshold);
+        return res.score;
+    }
+
+    extern "C" int detect_pe_label_from_file(const char* path, double threshold, char* reason_buf, size_t reason_len) {
+        if (!path) return 0;
+        auto res = AVEngine::Detector::detect_from_file(std::string(path), threshold);
+        if (reason_buf && reason_len > 0) {
+            std::string r = res.reason.substr(0, reason_len - 1);
+            memcpy(reason_buf, r.c_str(), r.size());
+            reason_buf[r.size()] = '\0';
+        }
+        return res.is_malware ? 1 : 0;
     }
 
 }  // namespace AVEngine
