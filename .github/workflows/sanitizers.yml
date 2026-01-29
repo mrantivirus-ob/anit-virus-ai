@@ -17,6 +17,8 @@ jobs:
           ./run_pe_tests_sanitized
           g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_malformed_tests.cpp -o run_malformed_tests_sanitized
           ./run_malformed_tests_sanitized
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_edge_tests.cpp -o run_edge_tests_sanitized
+          ./run_edge_tests_sanitized
       - name: Build fuzz target (clang, no run)
         run: |
           clang++ -std=c++17 -O1 -g -fsanitize=fuzzer,address,undefined engine.cpp tests/fuzz_pe.cpp -o fuzz_pe || true
