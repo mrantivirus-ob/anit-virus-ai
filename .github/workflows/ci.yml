@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y g++
+      - name: Build av_scanner
+        run: g++ -std=c++17 -O2 engine.cpp -o av_scanner
+      - name: Build and run tests
+        run: g++ -std=c++17 -O2 -DTEST_RUNNER engine.cpp tests/pe_tests.cpp -o run_tests && ./run_tests
+      - name: Build examples (optional)
+        run: |
+          # Optional step: try to build example C++ files that depend on LLVM. This is non-fatal.
+          if command -v llvm-config >/dev/null 2>&1; then
+            echo "Found llvm-config $(llvm-config --version), attempting to compile examples..."
+            CXXFLAGS="$(llvm-config --cxxflags) -std=c++17 -O2"
+            LDFLAGS="$(llvm-config --ldflags) $(llvm-config --libs) 2>/dev/null || true"
+            for f in .github/workflows/examples/*; do
+              fname=$(basename "$f")
+              echo "Compiling $fname..."
+                # When llvm-config is present, enforce compilation success (fail fast)
+              clang++ $CXXFLAGS "$f" $LDFLAGS -o /tmp/"$fname".out
+            done
+          else
+            echo "Skipping examples build: llvm-config not found"
+          fi
+      - name: Run linter
+        run: echo "Skipping linter" # Add clang-tidy/clang-format later

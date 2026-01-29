@@ -1,0 +1,1 @@
+CreateRemoteThread VirtualAllocEx WriteProcessMemory CreateRemoteThread VirtualAllocEx WriteProcessMemory WScript.Shell WScript.Shell WScript.Shell malicious code

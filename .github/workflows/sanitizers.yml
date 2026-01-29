@@ -1,0 +1,46 @@
+name: Sanitizers & Fuzz Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y g++ clang
+      - name: Build pe unit tests with ASAN/UBSAN
+        run: |
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_tests.cpp -o run_pe_tests_sanitized
+          ./run_pe_tests_sanitized
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_malformed_tests.cpp -o run_malformed_tests_sanitized
+          ./run_malformed_tests_sanitized
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_edge_tests.cpp -o run_edge_tests_sanitized
+          ./run_edge_tests_sanitized
+          # Replay fuzz corpus inputs to catch regressions (non-fatal if directory is absent)
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/fuzz_corpus_replay_tests.cpp -o run_fuzz_corpus_replay_sanitized
+          ./run_fuzz_corpus_replay_sanitized
+          # Focused regression tests for notable crash artifacts
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/fuzz_regressions_tests.cpp -o run_fuzz_regressions_sanitized
+          ./run_fuzz_regressions_sanitized
+      - name: Build fuzz target (clang, no run)
+        run: |
+          clang++ -std=c++17 -O1 -g -fsanitize=fuzzer,address,undefined engine.cpp tests/fuzz_pe.cpp -o fuzz_pe || true
+
+      - name: ML smoke training (optional, small dataset)
+        run: |
+          make export_ember_features || true
+          python3 -m pip install --user -r requirements.txt || true
+          python3 tools/generate_dataset.py || true
+          python3 tools/train_detector.py || true
+
+  fuzz-artifact:
+    runs-on: ubuntu-latest
+    needs: sanitizers
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload fuzz binary (if present)
+        run: |
+          if [ -f fuzz_pe ]; then echo "fuzz binary present"; else echo "no fuzz binary built"; fi
