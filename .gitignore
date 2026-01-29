@@ -1,0 +1,14 @@
+# Ignore build artifacts, environment, and generated models/data
+*.o
+*.a
+*.so
+export_*
+fuzz_pe
+av_scanner
+run_*
+*.joblib
+.venv/
+artifacts/
+# keep local dataset/model directories ignored if they appear
+models/
+data/

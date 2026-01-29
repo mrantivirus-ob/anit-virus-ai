@@ -61,4 +61,5 @@ predict: export_ember_features
 	python3 tools/predict.py $(file)
 
 clean:
-	rm -f $(SANITIZED_TESTS) $(FUZZ_TARGET) export_features
+	rm -f $(SANITIZED_TESTS) $(FUZZ_TARGET) export_features export_ember_features export_features engine.o engine_header.o *.o fuzz_pe av_scanner run_* || true
+	rm -rf artifacts/* .venv || true
