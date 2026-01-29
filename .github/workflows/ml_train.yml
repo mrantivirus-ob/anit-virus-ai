@@ -42,8 +42,16 @@ jobs:
           ls -l models || true
           if [ -f models/logreg.joblib ]; then echo "Model generated"; else echo "Model not found"; fi
 
-      - name: Upload trained model artifact
+      - name: Show training metrics
+        run: |
+          echo "=== Training metrics ==="
+          if [ -f models/metrics.json ]; then cat models/metrics.json; else echo "No metrics file generated"; fi
+
+      - name: Upload trained model and metrics
         uses: actions/upload-artifact@v4
         with:
-          name: trained-model
-          path: models/logreg.joblib
+          name: ml-artifacts
+          path: |
+            models/logreg.joblib
+            models/metrics.json
+            models/confusion_matrix.csv

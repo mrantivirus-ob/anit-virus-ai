@@ -49,10 +49,38 @@ def export_dir(label, dirpath):
 
 
 def main():
-    ensure_exporter()
-    all_rows = []
-    all_rows += export_dir(0, DATA_DIR / 'benign')
-    all_rows += export_dir(1, DATA_DIR / 'malware')
+    # Prefer EMBER exporter if available
+    ember_bin = ROOT / 'export_ember_features'
+    if ember_bin.exists():
+        print('Using EMBER exporter:', ember_bin)
+        def export_dir_ember(label, dirpath):
+            out = []
+            files = list(pathlib.Path(dirpath).glob('*'))
+            if not files:
+                return out
+            args = [str(ember_bin), str(label)] + [str(p) for p in files]
+            print('Running:', ' '.join(args[:3]), '... {} files'.format(len(files)))
+            p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = p.communicate()
+            if stderr:
+                print(stderr)
+            for line in stdout.splitlines():
+                parts = line.strip().split(',')
+                if len(parts) < 3:
+                    continue
+                path = parts[0]
+                label = int(parts[1])
+                feats = list(map(float, parts[2:]))
+                out.append((path, label, feats))
+            return out
+        all_rows = []
+        all_rows += export_dir_ember(0, DATA_DIR / 'benign')
+        all_rows += export_dir_ember(1, DATA_DIR / 'malware')
+    else:
+        ensure_exporter()
+        all_rows = []
+        all_rows += export_dir(0, DATA_DIR / 'benign')
+        all_rows += export_dir(1, DATA_DIR / 'malware')
 
     if not all_rows:
         print('No exported rows; generate sample dataset first: python3 tools/generate_dataset.py')
@@ -81,6 +109,49 @@ def main():
     model_path = MODEL_DIR / 'logreg.joblib'
     joblib.dump(clf, model_path)
     print('Saved model to', model_path)
+
+    # ----- Evaluation & metrics -----
+    from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report
+    try:
+        # Try cross-validated predict_proba if we have enough data
+        if len(y) >= 4:
+            from sklearn.model_selection import cross_val_predict
+            probs = cross_val_predict(clf, X, y, cv=cv, method='predict_proba')[:, 1]
+            preds = (probs >= 0.5).astype(int)
+        else:
+            probs = clf.predict_proba(X)[:, 1]
+            preds = clf.predict(X)
+
+        auc = float(roc_auc_score(y, probs)) if len(np.unique(y)) > 1 else float('nan')
+        cm = confusion_matrix(y, preds).tolist()
+        report = classification_report(y, preds, output_dict=True)
+
+        metrics = {
+            'auc': auc,
+            'n_samples': int(X.shape[0]),
+            'positives': int(y.sum()),
+            'negatives': int((y == 0).sum()),
+            'confusion_matrix': cm,
+            'classification_report': report,
+        }
+
+        import json
+        metrics_path = MODEL_DIR / 'metrics.json'
+        with open(metrics_path, 'w') as mf:
+            json.dump(metrics, mf, indent=2)
+        # Save confusion matrix CSV for easier inspection
+        import csv
+        cm_path = MODEL_DIR / 'confusion_matrix.csv'
+        with open(cm_path, 'w', newline='') as cf:
+            w = csv.writer(cf)
+            for row in cm:
+                w.writerow(row)
+
+        print('Saved metrics to', metrics_path)
+        print('Saved confusion matrix to', cm_path)
+
+    except Exception as e:
+        print('Failed to compute metrics:', e)
 
 if __name__ == '__main__':
     main()
