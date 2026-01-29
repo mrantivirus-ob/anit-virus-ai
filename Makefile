@@ -39,5 +39,26 @@ run_fuzz_corpus_replay_sanitized: engine.cpp tests/fuzz_corpus_replay_tests.cpp
 $(FUZZ_TARGET): engine.cpp tests/fuzz_pe.cpp
 	$(CLANGXX) $(FUZZFLAGS) $^ -o $@
 
+# Tools
+export_features: tools/export_features.cpp
+	$(CXX) -std=c++17 -O2 tools/export_features.cpp -o export_features
+
+export_ember_features: tools/export_ember_features.cpp engine.cpp
+	# Compile the engine without the main/test runner to avoid duplicate mains
+	$(CXX) -std=c++17 -O2 -DHEADER_ONLY -c engine.cpp -o engine_header.o
+	$(CXX) -std=c++17 -O2 tools/export_ember_features.cpp engine_header.o -o export_ember_features
+
+.PHONY: gen_dataset train predict
+
+gen_dataset:
+	python3 tools/generate_dataset.py
+
+train: export_ember_features
+	python3 -m pip install --user -r requirements.txt
+	python3 tools/train_detector.py --ember
+
+predict: export_ember_features
+	python3 tools/predict.py $(file)
+
 clean:
-	rm -f $(SANITIZED_TESTS) $(FUZZ_TARGET)
+	rm -f $(SANITIZED_TESTS) $(FUZZ_TARGET) export_features
