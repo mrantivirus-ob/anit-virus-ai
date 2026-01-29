@@ -25,8 +25,8 @@ jobs:
             for f in .github/workflows/examples/*; do
               fname=$(basename "$f")
               echo "Compiling $fname..."
-              # allow compile failures without failing the job
-              clang++ $CXXFLAGS "$f" $LDFLAGS -o /tmp/"$fname".out || echo "Compile failed for $fname (non-fatal)"
+                # When llvm-config is present, enforce compilation success (fail fast)
+              clang++ $CXXFLAGS "$f" $LDFLAGS -o /tmp/"$fname".out
             done
           else
             echo "Skipping examples build: llvm-config not found"
