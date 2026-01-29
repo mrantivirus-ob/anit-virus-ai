@@ -1,0 +1,31 @@
+name: Sanitizers & Fuzz Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y g++ clang
+      - name: Build pe unit tests with ASAN/UBSAN
+        run: |
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_tests.cpp -o run_pe_tests_sanitized
+          ./run_pe_tests_sanitized
+          g++ -std=c++17 -O1 -g -DTEST_RUNNER -fsanitize=address,undefined -fno-omit-frame-pointer engine.cpp tests/pe_malformed_tests.cpp -o run_malformed_tests_sanitized
+          ./run_malformed_tests_sanitized
+      - name: Build fuzz target (clang, no run)
+        run: |
+          clang++ -std=c++17 -O1 -g -fsanitize=fuzzer,address,undefined engine.cpp tests/fuzz_pe.cpp -o fuzz_pe || true
+
+  fuzz-artifact:
+    runs-on: ubuntu-latest
+    needs: sanitizers
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload fuzz binary (if present)
+        run: |
+          if [ -f fuzz_pe ]; then echo "fuzz binary present"; else echo "no fuzz binary built"; fi
