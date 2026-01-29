@@ -44,9 +44,9 @@ export_features: tools/export_features.cpp
 	$(CXX) -std=c++17 -O2 tools/export_features.cpp -o export_features
 
 export_ember_features: tools/export_ember_features.cpp engine.cpp
-	# Compile the engine without the main/test runner to avoid duplicate mains
-	$(CXX) -std=c++17 -O2 -DHEADER_ONLY -c engine.cpp -o engine_header.o
-	$(CXX) -std=c++17 -O2 tools/export_ember_features.cpp engine_header.o -o export_ember_features
+	# Compile the EMBER exporter by compiling both sources together with HEADER_ONLY
+	# This ensures the C wrapper is available at link time and avoids separate object linkage issues
+	$(CXX) -std=c++17 -O2 -DHEADER_ONLY tools/export_ember_features.cpp engine.cpp -o export_ember_features
 
 .PHONY: gen_dataset train predict
 
