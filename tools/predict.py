@@ -7,7 +7,8 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MODEL_DIR = ROOT / 'models'
-EXPORT_BIN = ROOT / 'export_features'
+# Prefer EMBER exporter when available
+EXPORT_BIN = ROOT / ('export_ember_features' if (ROOT / 'export_ember_features').exists() else 'export_features')
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:

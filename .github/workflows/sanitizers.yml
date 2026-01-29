@@ -29,6 +29,13 @@ jobs:
         run: |
           clang++ -std=c++17 -O1 -g -fsanitize=fuzzer,address,undefined engine.cpp tests/fuzz_pe.cpp -o fuzz_pe || true
 
+      - name: ML smoke training (optional, small dataset)
+        run: |
+          make export_ember_features || true
+          python3 -m pip install --user -r requirements.txt || true
+          python3 tools/generate_dataset.py || true
+          python3 tools/train_detector.py || true
+
   fuzz-artifact:
     runs-on: ubuntu-latest
     needs: sanitizers
