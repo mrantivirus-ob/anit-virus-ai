@@ -5,8 +5,8 @@
 #include <iomanip>
 #include <filesystem>
 
-// Forward declarations from engine.cpp (we link with engine object compiled with HEADER_ONLY)
-extern "C" size_t ember_features_from_bytes(const uint8_t* bytes, size_t size, double* out, size_t out_len);
+// We call the engine's C++ extractor directly when compiling alongside engine.cpp
+// (this avoids subtle C-wrapper linkage issues in some CI toolchains)
 
 namespace AVEngine {
     struct EMBERFeatures {
@@ -36,9 +36,11 @@ int main(int argc, char** argv) {
         }
         std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
-        // Use the C wrapper to obtain EMBER features (safe linkage)
-        std::vector<double> vec(512, 0.0);
-        size_t got = ember_features_from_bytes(data.data(), data.size(), vec.data(), vec.size());
+        // Use the engine's C++ API directly (we compile with engine.cpp so this is available)
+        AVEngine::EMBERFeatures feats;
+        AVEngine::FileFeatureExtractor::extract_ember_pe_features(data, feats);
+        auto vec = feats.to_vector(512);
+        size_t got = vec.size();
 
         // Print CSV: path,label,feat0,feat1,...
         std::cout << path << "," << label;
